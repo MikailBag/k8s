@@ -27,7 +27,6 @@ struct ArgsAddons {
 
 #[derive(Debug, Clap)]
 struct ArgsPush {
-    #[clap(long, short)]
     image: String,
     #[clap(long, short)]
     name: String,

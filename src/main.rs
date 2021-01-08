@@ -1,6 +1,8 @@
 mod addons;
+mod config_defs;
 mod dashboard;
 mod deployment_util;
+mod push_img;
 mod service_util;
 mod vm;
 mod watch;
@@ -23,6 +25,14 @@ struct ArgsAddons {
     only_apply: bool,
 }
 
+#[derive(Debug, Clap)]
+struct ArgsPush {
+    #[clap(long, short)]
+    image: String,
+    #[clap(long, short)]
+    name: String,
+}
+
 #[derive(Clap, Debug)]
 enum Args {
     Up,
@@ -30,6 +40,7 @@ enum Args {
     Dash,
     Addons(ArgsAddons),
     K(ArgsK),
+    Push(ArgsPush),
 }
 
 fn load_configs() -> anyhow::Result<(vm::VmConfig,)> {
@@ -63,6 +74,7 @@ async fn real_main() -> anyhow::Result<()> {
         Args::Down => up(true).await,
         Args::Dash => dashboard::open().await,
         Args::Addons(ArgsAddons { only_apply }) => addons::install(only_apply).await,
+        Args::Push(ArgsPush { image, name }) => push_img::push(&image, &name).await,
         Args::K(ArgsK { args }) => {
             let status = tokio::process::Command::new("kubectl")
                 .stdin(std::process::Stdio::inherit())

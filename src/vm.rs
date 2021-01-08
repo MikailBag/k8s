@@ -186,7 +186,6 @@ pub async fn create(config: &VmConfig) -> anyhow::Result<VmState> {
 pub async fn setup_soft(state: &VmState) -> anyhow::Result<()> {
     println!("Establishing connection to vm");
     let mut sess = state.connect().await?;
-    //let dest = format!("yc-user@{}", state.ip);
     println!("Updating apt index");
     sess.run(&["sudo", "apt-get", "update"]).await?;
     println!("Installing packages");
@@ -202,6 +201,13 @@ pub async fn setup_soft(state: &VmState) -> anyhow::Result<()> {
         "gnupg2",
     ])
     .await?;
+    println!("Trusting local CA");
+    let ca_settings: crate::config_defs::CaSettings =
+        serde_json::from_slice(&tokio::fs::read(crate::ROOT.join("etc/ca.json")).await?)?;
+    let ca_certificate = tokio::fs::read(&ca_settings.certificate).await?;
+    sess.send("/tmp/ca-cert", &ca_certificate).await?;
+    sess.run(&["sudo", "cp", "/tmp/ca-cert", "/usr/local/share/ca-certificates/local-ca.crt"]).await?;
+    sess.run(&["sudo", "update-ca-certificates"]).await?;
     println!("Adding Docker GPG key");
     sess.run(&[
         "curl",

@@ -1,10 +1,7 @@
 use k8s_openapi::{api::core::v1, apimachinery::pkg::apis::meta::v1::ObjectMeta};
 use kube::{api::PatchParams, Api};
 use rand::Rng;
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeMap, path::Path};
 pub async fn install(only_apply: bool) -> anyhow::Result<()> {
     crate::configure_kubectl();
     println!("Applying addons");
@@ -21,6 +18,8 @@ pub async fn install(only_apply: bool) -> anyhow::Result<()> {
 
 async fn install_docker_registry() -> anyhow::Result<()> {
     println!("------ Setting up docker registry ------");
+    println!("Obtaining registry url");
+    let registry_url = crate::service_util::resolve_service("registry", "registry").await?;
     let username = "admin";
     let mut rng = rand::thread_rng();
     let password = std::iter::repeat(())
@@ -33,6 +32,9 @@ async fn install_docker_registry() -> anyhow::Result<()> {
     println!("Pushing credentials to k8s");
     let mut secret_data = BTreeMap::new();
     secret_data.insert("credentials".to_string(), credentials.to_string());
+    secret_data.insert("USERNAME".to_string(), username.to_string());
+    secret_data.insert("PASSWORD".to_string(), password.clone());
+    secret_data.insert("ADDRESS".to_string(), registry_url.clone());
     let secret_with_creds = v1::Secret {
         string_data: Some(secret_data),
         metadata: ObjectMeta {
@@ -54,13 +56,11 @@ async fn install_docker_registry() -> anyhow::Result<()> {
     println!("Creating docker registry certificates");
     let tempdir = tempfile::TempDir::new()?;
     setup_certs(tempdir.path()).await?;
-
-    println!("Obtaining url");
-    let registry_url = crate::service_util::resolve_service("registry", "registry").await?;
     println!("Registry url is {}", registry_url);
     crate::deployment_util::restart_deployment(&k, "registry", "registry").await?;
     println!("Waiting for registry to become ready");
-    crate::watch::watch::<k8s_openapi::api::apps::v1::Deployment>(&k, "registry", "registry", 30).await?;
+    crate::watch::watch::<k8s_openapi::api::apps::v1::Deployment>(&k, "registry", "registry", 30)
+        .await?;
     println!("Logging in to registry");
     xshell::cmd!("docker login {registry_url} -u {username} -p {password}").run()?;
     Ok(())
@@ -94,7 +94,8 @@ async fn setup_certs(path: &Path) -> anyhow::Result<()> {
     let docker_csr_path = docker_csr_path.display().to_string();
 
     let _p = xshell::pushd(&*crate::ROOT)?;
-    let ca_settings: CaSettings = serde_json::from_slice(&tokio::fs::read("./etc/ca.json").await?)?;
+    let ca_settings: crate::config_defs::CaSettings =
+        serde_json::from_slice(&tokio::fs::read("./etc/ca.json").await?)?;
     let ca_certificate = &ca_settings.certificate;
     let ca_private_key = &ca_settings.private_key;
     let docker_certs = xshell::cmd!(
@@ -131,10 +132,4 @@ async fn setup_certs(path: &Path) -> anyhow::Result<()> {
         .await?;
     println!("Certificates pushed");
     Ok(())
-}
-
-#[derive(serde::Deserialize)]
-struct CaSettings {
-    private_key: PathBuf,
-    certificate: PathBuf,
 }

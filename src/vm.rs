@@ -18,7 +18,7 @@ impl VmConfig {
 #[derive(Serialize, Deserialize)]
 pub struct VmState {
     name: String,
-    ip: String,
+    pub ip: String,
     priv_ip: String,
 }
 
@@ -174,6 +174,11 @@ pub async fn create(config: &VmConfig) -> anyhow::Result<VmState> {
             tokio::time::sleep(std::time::Duration::from_secs(1 << attempt)).await;
         }
     }
+
+    println!("Saving VM state");
+
+    let state_str = serde_json::to_string(&state)?;
+    tokio::fs::write(crate::ROOT.join("state/vm.json"), state_str).await?;
 
     Ok(state)
 }

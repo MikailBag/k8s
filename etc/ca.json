@@ -1,0 +1,4 @@
+{
+    "certificate": "/home/mb/ca/ca.pem",
+    "private_key": "/home/mb/ca/ca-key.pem"
+}

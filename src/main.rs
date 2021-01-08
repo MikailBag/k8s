@@ -1,4 +1,9 @@
+mod addons;
+mod dashboard;
+mod deployment_util;
+mod service_util;
 mod vm;
+mod watch;
 
 use clap::Clap;
 use once_cell::sync::Lazy;
@@ -12,10 +17,18 @@ struct ArgsK {
     args: Vec<String>,
 }
 
+#[derive(Debug, Clap)]
+struct ArgsAddons {
+    #[clap(long)]
+    only_apply: bool,
+}
+
 #[derive(Clap, Debug)]
 enum Args {
     Up,
     Down,
+    Dash,
+    Addons(ArgsAddons),
     K(ArgsK),
 }
 
@@ -38,10 +51,18 @@ async fn up(only_down: bool) -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let fut = real_main();
+    let fut = tokio_compat_02::FutureExt::compat(fut);
+    fut.await
+}
+
+async fn real_main() -> anyhow::Result<()> {
     let args = Args::parse();
     match args {
         Args::Up => up(false).await,
         Args::Down => up(true).await,
+        Args::Dash => dashboard::open().await,
+        Args::Addons(ArgsAddons { only_apply }) => addons::install(only_apply).await,
         Args::K(ArgsK { args }) => {
             let status = tokio::process::Command::new("kubectl")
                 .stdin(std::process::Stdio::inherit())
@@ -54,4 +75,16 @@ async fn main() -> anyhow::Result<()> {
             std::process::exit(status.code().unwrap_or(-1))
         }
     }
+}
+
+fn configure_kubectl() {
+    std::env::set_var("KUBECONFIG", ROOT.join("state/kubeconfig"));
+}
+
+async fn kube() -> anyhow::Result<kube::Client> {
+    let kubeconfig = ROOT.join("state/kubeconfig");
+    let kubeconfig = kube::config::Kubeconfig::read_from(kubeconfig)?;
+
+    let config = kube::Config::from_custom_kubeconfig(kubeconfig, &Default::default()).await?;
+    Ok(kube::Client::new(config))
 }

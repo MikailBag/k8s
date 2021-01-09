@@ -5,7 +5,7 @@ authors = ["Mikail Bagishov <bagishov.mikail@yandex.ru>"]
 edition = "2018"
 
 [dependencies]
-rocket = { git = "https://github.com/SergioBenitez/Rocket", branch = "master" }
+rocket = { git = "https://github.com/SergioBenitez/Rocket", branch = "master", features = ["tls"] }
 rocket_contrib = { git = "https://github.com/SergioBenitez/Rocket", branch = "master" }
 tokio = { version = "1.0.1", features = ["rt", "rt-multi-thread", "macros"] }
 anyhow = "1.0.37"

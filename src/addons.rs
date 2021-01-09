@@ -5,7 +5,7 @@ use k8s_openapi::{
 };
 use kube::{api::PatchParams, Api};
 use rand::Rng;
-use std::{collections::BTreeMap, future::Future, path::Path, pin::Pin};
+use std::{collections::BTreeMap, future::Future, pin::Pin};
 
 trait Addon {
     fn name(&self) -> &str;
@@ -46,18 +46,13 @@ impl Addon for Admission {
             println!("Pushing tool");
 
             crate::push_img::push("d-k8s-tool", "tool").await?;
-
-            /*println!("Copying secret");
-            let registry_secrets_api = kube::Api::<v1::Secret>::namespaced(k.clone(), "registry");
-            let admission_secrets_api = kube::Api::<v1::Secret>::namespaced(k.clone(), "admission");
-            let mut sec = registry_secrets_api.get("local").await?;
-            sec.metadata.name = Some("local-registry-credentials".to_string());
-            sec.metadata.namespace = None;
-            sec.metadata.resource_version = None;
-            admission_secrets_api
-                .create(&Default::default(), &sec)
-                .await?;*/
-            // admission_secrets_api.patch("local-registry-credentials", &Default::default(), serde_json::to_vec(&sec)?).await?;
+            println!("Issuing certificates");
+            issue_certs(
+                &["admission-controller-svc.admission.svc"],
+                "admission-webhook",
+                ("admission", "admission-controller-pki"),
+            )
+            .await?;
             println!("Patching deployment");
             let k = crate::kube().await?;
             let image_registry =
@@ -181,8 +176,7 @@ async fn install_docker_registry() -> anyhow::Result<()> {
     println!("Credentials: {}:{}", username, password);
     println!("Pushing credentials to k8s");
     println!("Creating docker registry certificates");
-    let tempdir = tempfile::TempDir::new()?;
-    setup_certs(tempdir.path()).await?;
+    setup_certs().await?;
     println!("Registry url is {}", registry_url);
     println!("Waiting for registry to become ready");
     crate::watch::watch::<k8s_openapi::api::apps::v1::Deployment>(&k, "registry", "registry", 30)
@@ -192,14 +186,9 @@ async fn install_docker_registry() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn setup_certs(path: &Path) -> anyhow::Result<()> {
-    let vm_state: crate::vm::VmState =
-        serde_json::from_slice(&tokio::fs::read(crate::ROOT.join("state/vm.json")).await?)?;
-    let vm_ip = &vm_state.ip;
-    let docker_cert_csr = serde_json::json! ({
-        "hosts": [
-            vm_ip,
-        ],
+async fn issue_certs(sans: &[&str], name: &str, push_to: (&str, &str)) -> anyhow::Result<()> {
+    let csr = serde_json::json! ({
+        "hosts": sans,
         "key": {
             "algo": "rsa",
             "size": 2048,
@@ -209,53 +198,56 @@ async fn setup_certs(path: &Path) -> anyhow::Result<()> {
                 "C": "RU",
                 "L": "Moscow",
                 "O": "mb",
-                "OU": "me",
+                "OU": name,
                 "ST": "MOS",
             }
         ]
     });
-    let docker_cert_csr = serde_json::to_string(&docker_cert_csr)?;
-    let docker_csr_path = path.join("docker-csr.json");
-    tokio::fs::write(&docker_csr_path, &docker_cert_csr).await?;
-    let docker_csr_path = docker_csr_path.display().to_string();
+    let csr = serde_json::to_string(&csr)?;
+    let csr_path = format!("/tmp/d-k8s-csr-{}.json", name);
+    tokio::fs::write(&csr_path, &csr).await?;
 
     let _p = xshell::pushd(&*crate::ROOT)?;
     let ca_settings: crate::config_defs::CaSettings =
         serde_json::from_slice(&tokio::fs::read("./etc/ca.json").await?)?;
     let ca_certificate = &ca_settings.certificate;
     let ca_private_key = &ca_settings.private_key;
-    let docker_certs = xshell::cmd!(
-        "cfssl gencert -ca {ca_certificate} -ca-key {ca_private_key} {docker_csr_path}"
-    )
-    .read()?;
-    let docker_certs: serde_json::Value = serde_json::from_str(&docker_certs)?;
-    let docker_certs: BTreeMap<_, _> = vec![
+    let certs =
+        xshell::cmd!("cfssl gencert -ca {ca_certificate} -ca-key {ca_private_key} {csr_path}")
+            .read()?;
+    let certs: serde_json::Value = serde_json::from_str(&certs)?;
+    let certs: BTreeMap<_, _> = vec![
         (
             "crt".to_string(),
-            docker_certs["cert"].as_str().unwrap().to_string(),
+            certs["cert"].as_str().unwrap().to_string(),
         ),
         (
             "key".to_string(),
-            docker_certs["key"].as_str().unwrap().to_string(),
+            certs["key"].as_str().unwrap().to_string(),
         ),
     ]
     .into_iter()
     .collect();
-    let docker_certs = v1::Secret {
-        string_data: Some(docker_certs),
+    let certs_secret = v1::Secret {
+        string_data: Some(certs),
         metadata: ObjectMeta {
-            name: Some("registry-certs".to_string()),
+            name: Some(push_to.1.to_string()),
             ..Default::default()
         },
         ..Default::default()
     };
-    let docker_certs = serde_json::to_vec(&docker_certs)?;
+    let certs_secret = serde_json::to_vec(&certs_secret)?;
     println!("Pushing certificates to k8s");
     let k = crate::kube().await?;
-    let secrets_api = Api::<v1::Secret>::namespaced(k, "registry");
+    let secrets_api = Api::<v1::Secret>::namespaced(k, push_to.0);
     secrets_api
-        .patch("registry-certs", &PatchParams::apply("d-k8s"), docker_certs)
+        .patch(push_to.1, &PatchParams::apply("d-k8s"), certs_secret)
         .await?;
-    println!("Certificates pushed");
+    Ok(())
+}
+
+async fn setup_certs() -> anyhow::Result<()> {
+    let vm_ip = crate::vm::vm_ip().await?;
+    issue_certs(&[&vm_ip], "docker-registry", ("registry", "registry-certs")).await?;
     Ok(())
 }

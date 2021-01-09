@@ -1,6 +1,6 @@
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Deserialize, Debug)]
@@ -206,7 +206,13 @@ pub async fn setup_soft(state: &VmState) -> anyhow::Result<()> {
         serde_json::from_slice(&tokio::fs::read(crate::ROOT.join("etc/ca.json")).await?)?;
     let ca_certificate = tokio::fs::read(&ca_settings.certificate).await?;
     sess.send("/tmp/ca-cert", &ca_certificate).await?;
-    sess.run(&["sudo", "cp", "/tmp/ca-cert", "/usr/local/share/ca-certificates/local-ca.crt"]).await?;
+    sess.run(&[
+        "sudo",
+        "cp",
+        "/tmp/ca-cert",
+        "/usr/local/share/ca-certificates/local-ca.crt",
+    ])
+    .await?;
     sess.run(&["sudo", "update-ca-certificates"]).await?;
     println!("Adding Docker GPG key");
     sess.run(&[
@@ -356,4 +362,10 @@ pub async fn setup_soft(state: &VmState) -> anyhow::Result<()> {
         String::from_utf8(kubeconfig)?.replace(&state.priv_ip.to_string(), &state.ip.to_string());
     tokio::fs::write(crate::ROOT.join("state/kubeconfig"), kubeconfig).await?;
     Ok(())
+}
+
+pub async fn vm_ip() -> anyhow::Result<String> {
+    let vm_state: crate::vm::VmState =
+        serde_json::from_slice(&tokio::fs::read(crate::ROOT.join("state/vm.json")).await?)?;
+    Ok(vm_state.ip)
 }

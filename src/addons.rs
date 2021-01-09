@@ -179,7 +179,7 @@ async fn install_docker_registry() -> anyhow::Result<()> {
     setup_certs().await?;
     println!("Registry url is {}", registry_url);
     println!("Waiting for registry to become ready");
-    crate::watch::watch::<k8s_openapi::api::apps::v1::Deployment>(&k, "registry", "registry", 30)
+    crate::watch::watch::<k8s_openapi::api::apps::v1::Deployment>(&k, "registry", "registry", 60)
         .await?;
     println!("Logging in to registry");
     xshell::cmd!("docker login {registry_url} -u {username} -p {password}").run()?;

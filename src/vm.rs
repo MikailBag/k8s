@@ -1,6 +1,6 @@
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use std::{sync::Arc};
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Deserialize, Debug)]
@@ -342,6 +342,14 @@ pub async fn setup_soft(state: &VmState) -> anyhow::Result<()> {
         "nodes",
         "--all",
         "node-role.kubernetes.io/master-",
+    ])
+    .await?;
+    sess.run(&[
+        "kubectl",
+        "annotate",
+        "nodes",
+        "--all",
+        &format!("d-k8s.io/public-ip={}", state.ip),
     ])
     .await?;
     println!("Installing cilium");

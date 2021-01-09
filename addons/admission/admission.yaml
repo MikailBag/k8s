@@ -16,7 +16,7 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: admission
+  name: cluster-admin
 subjects:
   - kind: ServiceAccount
     name: admission
@@ -45,6 +45,8 @@ spec:
       containers:
         - name: main
           env:
+            - name: RUST_BACKTRACE
+              value: '1'
             - name: ROCKET_LOG_LEVEL
               value: normal
             - name: ROCKET_ADDRESS

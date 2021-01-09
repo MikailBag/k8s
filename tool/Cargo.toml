@@ -14,3 +14,8 @@ serde_json = "1.0.61"
 log = "0.4.11"
 json-patch = "0.2.6"
 base64 = "0.13.0"
+kube = { version = "0.47.0" }
+k8s-openapi = { version = "0.10.0", default-features = false, features = ["v1_18"] }
+kube-runtime = { version = "0.47.0" }
+futures = "0.3.9"
+tokio-compat-02 = "0.2.0"

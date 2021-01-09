@@ -1,7 +1,6 @@
 mod addons;
 mod config_defs;
 mod dashboard;
-mod deployment_util;
 mod push_img;
 mod service_util;
 mod vm;

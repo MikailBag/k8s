@@ -1,3 +1,4 @@
+use anyhow::Context as _;
 use k8s_openapi::{
     api::{apps::v1 as appsv1, core::v1},
     apimachinery::pkg::apis::meta::v1::ObjectMeta,
@@ -62,35 +63,21 @@ impl Addon for Admission {
             let image_registry =
                 crate::service_util::resolve_service("registry", "registry").await?;
             let image = format!("{}/tool", image_registry);
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_micros()
-                .to_string();
-            let patch = serde_json::json!({
-               "spec": {
-                   "template": {
-                       "metadata": {
-                           "annotations": {
-                               "d-k8s.io/created-at": now
-                            }
-                        },
-                        "spec": {
-                           "containers": [{
-                               "name": "push-secret",
-                               "image": image,
-                            }]
-                       }
-                   }
-               }
-            });
             let deployments_api = kube::Api::<appsv1::Deployment>::namespaced(k, "admission");
+            let mut deployment = deployments_api.get("admission-controller").await?;
+            {
+                let spec = deployment.spec.as_mut().context("no .spec")?;
+                let pod_spec = spec
+                    .template
+                    .spec
+                    .as_mut()
+                    .context("no .spec.template.spec")?;
+                anyhow::ensure!(pod_spec.containers.len() == 1);
+                let container = &mut pod_spec.containers[0];
+                container.image = Some(image);
+            }
             deployments_api
-                .patch(
-                    "admission-controller",
-                    &Default::default(),
-                    serde_json::to_vec(&patch)?,
-                )
+                .replace("admission-controller", &Default::default(), &deployment)
                 .await?;
             Ok(())
         })
@@ -99,10 +86,8 @@ impl Addon for Admission {
 
 pub async fn install(only_apply: bool, filter: Option<&[String]>) -> anyhow::Result<()> {
     crate::configure_kubectl();
-    let mut all_addons: Vec<Box<dyn Addon>> = vec![
-        Box::new(Dashboard),
-        Box::new(Registry), /*Box::new(Admission)*/
-    ];
+    let mut all_addons: Vec<Box<dyn Addon>> =
+        vec![Box::new(Dashboard), Box::new(Registry), Box::new(Admission)];
 
     println!("Applying addons");
     if let Some(filter) = filter {
@@ -133,8 +118,9 @@ pub async fn install(only_apply: bool, filter: Option<&[String]>) -> anyhow::Res
     Ok(())
 }
 
-async fn install_docker_registry() -> anyhow::Result<()> {
-    println!("Obtaining registry url");
+/// Gets or creates secret with credentials
+async fn get_registry_credentials(k: &kube::Client) -> anyhow::Result<BTreeMap<String, String>> {
+    const SECRET_NAME: &str = "registry-credentials";
     let registry_url = crate::service_util::resolve_service("registry", "registry").await?;
     let username = "admin";
     let mut rng = rand::thread_rng();
@@ -143,37 +129,61 @@ async fn install_docker_registry() -> anyhow::Result<()> {
         .map(char::from)
         .take(30)
         .collect::<String>();
-    println!("Credentials: {}:{}", username, password);
     let credentials = xshell::cmd!("htpasswd -Bbn {username} {password}").read()?;
-    println!("Pushing credentials to k8s");
-    let mut secret_data = BTreeMap::new();
-    secret_data.insert("credentials".to_string(), credentials.to_string());
-    secret_data.insert("USERNAME".to_string(), username.to_string());
-    secret_data.insert("PASSWORD".to_string(), password.clone());
-    secret_data.insert("ADDRESS".to_string(), registry_url.clone());
-    let secret_with_creds = v1::Secret {
-        string_data: Some(secret_data),
+    let mut new_creds = BTreeMap::new();
+    new_creds.insert("credentials".to_string(), credentials.to_string());
+    new_creds.insert("USERNAME".to_string(), username.to_string());
+    new_creds.insert("PASSWORD".to_string(), password.clone());
+    new_creds.insert("ADDRESS".to_string(), registry_url.clone());
+
+    let new_secret = v1::Secret {
+        string_data: Some(new_creds),
         metadata: ObjectMeta {
-            name: Some("registry-credentials".to_string()),
+            name: Some(SECRET_NAME.to_string()),
             ..Default::default()
         },
         ..Default::default()
     };
-    let secret_with_creds = serde_json::to_vec(&secret_with_creds)?;
-    let k = crate::kube().await?;
     let secrets_api = Api::<v1::Secret>::namespaced(k.clone(), "registry");
-    secrets_api
-        .patch(
-            "registry-credentials",
-            &PatchParams::apply("d-k8s"),
-            secret_with_creds,
-        )
-        .await?;
+    let create_secret_res = secrets_api.create(&Default::default(), &new_secret).await;
+
+    let effective_secret = match create_secret_res {
+        Ok(created) => created,
+        Err(err) => {
+            let is_caused_by_conflict = match &err {
+                kube::Error::Api(resp) => resp.code == 409,
+                _ => false,
+            };
+            if is_caused_by_conflict {
+                // secret already exists, lets just use it
+                let old_secret = secrets_api.get(SECRET_NAME).await?;
+                old_secret
+            } else {
+                return Err(err.into());
+            }
+        }
+    };
+
+    let mut res = BTreeMap::new();
+    for (k, v) in effective_secret.data.expect("no data on returned secret") {
+        let v = String::from_utf8(v.0)?;
+        res.insert(k, v);
+    }
+    Ok(res)
+}
+
+async fn install_docker_registry() -> anyhow::Result<()> {
+    let k = crate::kube().await?;
+    let registry_url = crate::service_util::resolve_service("registry", "registry").await?;
+    let creds = get_registry_credentials(&k).await?;
+    let username = creds["USERNAME"].clone();
+    let password = creds["PASSWORD"].clone();
+    println!("Credentials: {}:{}", username, password);
+    println!("Pushing credentials to k8s");
     println!("Creating docker registry certificates");
     let tempdir = tempfile::TempDir::new()?;
     setup_certs(tempdir.path()).await?;
     println!("Registry url is {}", registry_url);
-    crate::deployment_util::restart_deployment(&k, "registry", "registry").await?;
     println!("Waiting for registry to become ready");
     crate::watch::watch::<k8s_openapi::api::apps::v1::Deployment>(&k, "registry", "registry", 30)
         .await?;

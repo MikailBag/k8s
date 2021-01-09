@@ -23,6 +23,8 @@ struct ArgsK {
 struct ArgsAddons {
     #[clap(long)]
     only_apply: bool,
+    #[clap(long, short)]
+    filter: Vec<String>,
 }
 
 #[derive(Debug, Clap)]
@@ -72,7 +74,9 @@ async fn real_main() -> anyhow::Result<()> {
         Args::Up => up(false).await,
         Args::Down => up(true).await,
         Args::Dash => dashboard::open().await,
-        Args::Addons(ArgsAddons { only_apply }) => addons::install(only_apply).await,
+        Args::Addons(ArgsAddons { only_apply, filter }) => {
+            addons::install(only_apply, if filter.is_empty() { None } else { Some(&filter) }).await
+        }
         Args::Push(ArgsPush { image, name }) => push_img::push(&image, &name).await,
         Args::K(ArgsK { args }) => {
             let status = tokio::process::Command::new("kubectl")

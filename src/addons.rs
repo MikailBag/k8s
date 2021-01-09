@@ -1,23 +1,139 @@
-use k8s_openapi::{api::core::v1, apimachinery::pkg::apis::meta::v1::ObjectMeta};
+use k8s_openapi::{
+    api::{apps::v1 as appsv1, core::v1},
+    apimachinery::pkg::apis::meta::v1::ObjectMeta,
+};
 use kube::{api::PatchParams, Api};
 use rand::Rng;
-use std::{collections::BTreeMap, path::Path};
-pub async fn install(only_apply: bool) -> anyhow::Result<()> {
-    crate::configure_kubectl();
-    println!("Applying addons");
+use std::{collections::BTreeMap, future::Future, path::Path, pin::Pin};
 
-    let addons_path = crate::ROOT.join("addons");
-    xshell::cmd!("kubectl apply --recursive -f {addons_path}").run()?;
+trait Addon {
+    fn name(&self) -> &str;
+
+    fn fix(&self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>>>>;
+}
+
+struct Dashboard;
+impl Addon for Dashboard {
+    fn name(&self) -> &str {
+        "dashboard"
+    }
+    fn fix(&self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>>>> {
+        Box::pin(async move { Ok(()) })
+    }
+}
+
+struct Registry;
+impl Addon for Registry {
+    fn name(&self) -> &str {
+        "registry"
+    }
+    fn fix(&self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>>>> {
+        Box::pin(async move { install_docker_registry().await })
+    }
+}
+
+struct Admission;
+impl Addon for Admission {
+    fn name(&self) -> &str {
+        "admission"
+    }
+    fn fix(&self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>>>> {
+        Box::pin(async move {
+            println!("Building tool");
+            let tool_path = crate::ROOT.join("tool");
+            xshell::cmd!("docker build -t d-k8s-tool {tool_path}").run()?;
+            println!("Pushing tool");
+
+            crate::push_img::push("d-k8s-tool", "tool").await?;
+
+            /*println!("Copying secret");
+            let registry_secrets_api = kube::Api::<v1::Secret>::namespaced(k.clone(), "registry");
+            let admission_secrets_api = kube::Api::<v1::Secret>::namespaced(k.clone(), "admission");
+            let mut sec = registry_secrets_api.get("local").await?;
+            sec.metadata.name = Some("local-registry-credentials".to_string());
+            sec.metadata.namespace = None;
+            sec.metadata.resource_version = None;
+            admission_secrets_api
+                .create(&Default::default(), &sec)
+                .await?;*/
+            // admission_secrets_api.patch("local-registry-credentials", &Default::default(), serde_json::to_vec(&sec)?).await?;
+            println!("Patching deployment");
+            let k = crate::kube().await?;
+            let image_registry =
+                crate::service_util::resolve_service("registry", "registry").await?;
+            let image = format!("{}/tool", image_registry);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros()
+                .to_string();
+            let patch = serde_json::json!({
+               "spec": {
+                   "template": {
+                       "metadata": {
+                           "annotations": {
+                               "d-k8s.io/created-at": now
+                            }
+                        },
+                        "spec": {
+                           "containers": [{
+                               "name": "push-secret",
+                               "image": image,
+                            }]
+                       }
+                   }
+               }
+            });
+            let deployments_api = kube::Api::<appsv1::Deployment>::namespaced(k, "admission");
+            deployments_api
+                .patch(
+                    "admission-controller",
+                    &Default::default(),
+                    serde_json::to_vec(&patch)?,
+                )
+                .await?;
+            Ok(())
+        })
+    }
+}
+
+pub async fn install(only_apply: bool, filter: Option<&[String]>) -> anyhow::Result<()> {
+    crate::configure_kubectl();
+    let mut all_addons: Vec<Box<dyn Addon>> = vec![
+        Box::new(Dashboard),
+        Box::new(Registry), /*Box::new(Admission)*/
+    ];
+
+    println!("Applying addons");
+    if let Some(filter) = filter {
+        all_addons = std::mem::take(&mut all_addons)
+            .into_iter()
+            .filter(|addon| filter.contains(&addon.name().to_string()))
+            .collect();
+    }
+    if all_addons.is_empty() {
+        anyhow::bail!("No addons matched the filter");
+    }
+
+    let addons_base_path = crate::ROOT.join("addons");
+    let mut cmd = xshell::cmd!("kubectl apply --recursive");
+    for addon in &all_addons {
+        cmd = cmd.arg("-f").arg(addons_base_path.join(addon.name()));
+    }
+
+    cmd.run()?;
     if only_apply {
         return Ok(());
     }
     println!("Setting up addons");
-    install_docker_registry().await?;
+    for addon in &all_addons {
+        println!("------ Setting up addon {} ------", addon.name());
+        addon.fix().await?;
+    }
     Ok(())
 }
 
 async fn install_docker_registry() -> anyhow::Result<()> {
-    println!("------ Setting up docker registry ------");
     println!("Obtaining registry url");
     let registry_url = crate::service_util::resolve_service("registry", "registry").await?;
     let username = "admin";

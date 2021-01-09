@@ -1,8 +1,9 @@
-FROM rust:slim as builder
+FROM rust:1.49-slim as builder
 WORKDIR /app
-ADD src/ src
 ADD Cargo.toml .
-RUN cargo build --release
+RUN mkdir src && echo 'fn main(){}' > src/main.rs && cargo build --release && rm -rf ./src
+ADD src/ src
+RUN touch src/main.rs && cargo build --release
 
 FROM debian:stable-slim
 COPY --from=builder /app/target/release/tool /usr/bin/tool

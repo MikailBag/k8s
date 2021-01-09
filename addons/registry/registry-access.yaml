@@ -33,7 +33,7 @@ spec:
     spec:
       restartPolicy: Never
       serviceAccount: configure-dockerd
-      initContainers:
+      containers:
         - name: login
           image: docker
           envFrom:
@@ -52,24 +52,25 @@ spec:
             - $(CREDS_USERNAME)
             - --password
             - $(CREDS_PASSWORD)
-      containers:
-        - name: push-secret
-          image: bitnami/kubectl
-          volumeMounts:
-            - mountPath: /.docker
-              name: docker-config
-          securityContext:
-            runAsUser: 0
-          args:
-            - create
-            - secret
-            - generic
-            - local
-            - --from-file=.dockerconfigjson=/.docker/config.json
-            - --type=kubernetes.io/dockerconfigjson
+      #_containers:
+      #  - name: push-secret
+      #    image: bitnami/kubectl
+      #    volumeMounts:
+      #      - mountPath: /.docker
+      #        name: docker-config
+      #    securityContext:
+      #      runAsUser: 0
+      #    args:
+      #      - create
+      #      - secret
+      #      - generic
+      #      - local
+      #      - --from-file=.dockerconfigjson=/.docker/config.json
+      #      - --type=kubernetes.io/dockerconfigjson
       volumes:
         - name: docker-socket
           hostPath:
             path: /var/run/docker.sock
         - name: docker-config
-          emptyDir: {}
+          hostPath:
+            path: /.docker

@@ -3,6 +3,7 @@ mod config_defs;
 mod dashboard;
 mod push_img;
 mod service_util;
+mod tasks;
 mod vm;
 mod watch;
 
@@ -33,6 +34,11 @@ struct ArgsPush {
     name: String,
 }
 
+#[derive(Debug, Clap)]
+struct ArgsAddUser {
+    name: String,
+}
+
 #[derive(Clap, Debug)]
 enum Args {
     Up,
@@ -41,6 +47,7 @@ enum Args {
     Addons(ArgsAddons),
     K(ArgsK),
     Push(ArgsPush),
+    AddUser(ArgsAddUser),
 }
 
 fn load_configs() -> anyhow::Result<(vm::VmConfig,)> {
@@ -74,7 +81,15 @@ async fn real_main() -> anyhow::Result<()> {
         Args::Down => up(true).await,
         Args::Dash => dashboard::open().await,
         Args::Addons(ArgsAddons { only_apply, filter }) => {
-            addons::install(only_apply, if filter.is_empty() { None } else { Some(&filter) }).await
+            addons::install(
+                only_apply,
+                if filter.is_empty() {
+                    None
+                } else {
+                    Some(&filter)
+                },
+            )
+            .await
         }
         Args::Push(ArgsPush { image, name }) => push_img::push(&image, &name).await,
         Args::K(ArgsK { args }) => {
@@ -88,6 +103,7 @@ async fn real_main() -> anyhow::Result<()> {
                 .await?;
             std::process::exit(status.code().unwrap_or(-1))
         }
+        Args::AddUser(ArgsAddUser { name }) => tasks::add_user(&name).await,
     }
 }
 

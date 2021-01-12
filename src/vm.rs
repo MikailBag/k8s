@@ -368,7 +368,24 @@ pub async fn setup_soft(state: &VmState) -> anyhow::Result<()> {
     let kubeconfig = sess.pull("/home/yc-user/.kube/config").await?;
     let kubeconfig =
         String::from_utf8(kubeconfig)?.replace(&state.priv_ip.to_string(), &state.ip.to_string());
-    tokio::fs::write(crate::ROOT.join("state/kubeconfig"), kubeconfig).await?;
+    let kubeconfig_path = crate::ROOT.join("state/kubeconfig");
+    tokio::fs::write(&kubeconfig_path, kubeconfig).await?;
+    println!("Adding to ~/.kube/config");
+    let global_kc_path = dirs::home_dir()
+        .context("home dir not found")?
+        .join(".kube/config");
+    {
+        let _e = xshell::pushenv(
+            "KUBECONFIG",
+            format!(
+                "{}:{}",
+                kubeconfig_path.display(),
+                global_kc_path.display()
+            ),
+        );
+        let merged = xshell::cmd!("kubectl config view --flatten").read()?;
+        xshell::write_file(global_kc_path, merged)?;
+    }
     Ok(())
 }
 

@@ -21,7 +21,7 @@ fn make_role_rules() -> Vec<rbacv1::PolicyRule> {
             resource_names: None,
         });
     };
-    allow_standard_ops("", &["pods", "services", "replicasets", "configmaps"]);
+    allow_standard_ops("", &["pods", "pods/exec", "pods/attach", "services", "replicasets", "configmaps"]);
     allow_standard_ops("apps/v1", &["deployments"]);
 
     let mut allow_special_ops = |group: &str, kind: &str, ops: &[&str]| {

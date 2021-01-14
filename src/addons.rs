@@ -79,10 +79,24 @@ impl Addon for Admission {
     }
 }
 
+struct Storage;
+impl Addon for Storage {
+    fn name(&self) -> &str {
+        "storage"
+    }
+    fn fix(&self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>>>> {
+        Box::pin(async move { Ok(()) })
+    }
+}
+
 pub async fn install(only_apply: bool, filter: Option<&[String]>) -> anyhow::Result<()> {
     crate::configure_kubectl();
-    let mut all_addons: Vec<Box<dyn Addon>> =
-        vec![Box::new(Dashboard), Box::new(Registry), Box::new(Admission)];
+    let mut all_addons: Vec<Box<dyn Addon>> = vec![
+        Box::new(Storage),
+        Box::new(Dashboard),
+        Box::new(Registry),
+        Box::new(Admission),
+    ];
 
     println!("Applying addons");
     if let Some(filter) = filter {

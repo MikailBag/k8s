@@ -46,11 +46,11 @@ spec:
         - name: main
           env:
             - name: RUST_BACKTRACE
-              value: '1'
+              value: "1"
             - name: ROCKET_LOG_LEVEL
               value: normal
             - name: ROCKET_ADDRESS
-              value: '0.0.0.0'
+              value: "0.0.0.0"
             - name: ROCKET_TLS
               value: '{certs="/tls/crt",key="/tls/key"}'
           # image name will be patched during installation
@@ -70,15 +70,15 @@ spec:
   selector:
     app: admission-controller
   ports:
-  - port: 443
-    targetPort: 8000
+    - port: 443
+      targetPort: 8000
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
   name: admission-controller.d-k8s.io
 webhooks:
-  - name: admission-controller.d-k8s.io
+  - name: mutating-admission-controller.d-k8s.io
     rules:
       - apiGroups: [""]
         apiVersions: ["v1"]
@@ -89,9 +89,29 @@ webhooks:
       service:
         namespace: admission
         name: admission-controller-svc
-        path: /admission
+        path: /admission/mutate
     admissionReviewVersions: ["v1"]
     sideEffects: None
     timeoutSeconds: 5
     reinvocationPolicy: IfNeeded
-    failurePolicy: Ignore
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: admission-controller.d-k8s.io
+webhooks:
+  - name: validating-admission-controller.d-k8s.io
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+        scope: Namespaced
+    clientConfig:
+      service:
+        namespace: admission
+        name: admission-controller-svc
+        path: /admission/validate
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    timeoutSeconds: 5

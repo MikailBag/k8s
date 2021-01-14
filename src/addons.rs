@@ -92,7 +92,7 @@ impl Addon for Storage {
 pub async fn install(only_apply: bool, filter: Option<&[String]>) -> anyhow::Result<()> {
     crate::configure_kubectl();
     let mut all_addons: Vec<Box<dyn Addon>> = vec![
-        Box::new(Storage),
+        //Box::new(Storage),
         Box::new(Dashboard),
         Box::new(Registry),
         Box::new(Admission),

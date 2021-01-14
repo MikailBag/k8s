@@ -19,3 +19,7 @@ networking:
   dnsDomain: cluster.local
   serviceSubnet: 10.96.0.0/12
 scheduler: {}
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd

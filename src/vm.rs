@@ -40,6 +40,14 @@ impl Sess {
     }
 
     pub async fn run(&mut self, args: &[&str]) -> anyhow::Result<()> {
+        {
+            let mut s = '$'.to_string();
+            for arg in args {
+                s.push(' ');
+                s.push_str(arg);
+            }
+            println!("{}", s);
+        }
         let mut cmd = self.0.command(args[0]);
         cmd.raw_args(args.iter().skip(1));
         cmd.stderr(std::process::Stdio::piped());
@@ -214,7 +222,7 @@ pub async fn setup_soft(state: &VmState) -> anyhow::Result<()> {
     ])
     .await?;
     sess.run(&["sudo", "update-ca-certificates"]).await?;
-    println!("Adding Docker GPG key");
+    /*println!("Adding Docker GPG key");
     sess.run(&[
         "curl",
         "-fsSL",
@@ -225,7 +233,7 @@ pub async fn setup_soft(state: &VmState) -> anyhow::Result<()> {
         "add",
         "-",
     ])
-    .await?;
+    .await?;*/
     println!("Adding Kubernetes GPG key");
     sess.run(&[
         "curl",
@@ -245,59 +253,62 @@ pub async fn setup_soft(state: &VmState) -> anyhow::Result<()> {
         "\"deb https://apt.kubernetes.io kubernetes-xenial main\"",
     ])
     .await?;
-
+    /*
     println!("Adding Docker APT repository");
     sess.run(&[
         "sudo",
         "add-apt-repository",
         "\"deb [arch=amd64] https://download.docker.com/linux/ubuntu focal stable\"",
     ])
-    .await?;
+    .await?;*/
 
     println!("Updating APT db again");
     sess.run(&["sudo", "apt-get", "update"]).await?;
-    println!("Installing docker");
-    sess.run(&[
-        "sudo",
-        "apt-get",
-        "install",
-        "-y",
-        "containerd.io=1.2.13-2",
-        "docker-ce=5:19.03.11~3-0~ubuntu-$(lsb_release -cs)",
-        "docker-ce-cli=5:19.03.11~3-0~ubuntu-$(lsb_release -cs)",
-    ])
-    .await?;
-    println!("Configuring docker daemon");
-    let docker_config = serde_json::to_string_pretty(&serde_json::json!({
-        "exec-opts":[
-            "native.cgroupdriver=systemd"
-        ],
-        "log-driver": "json-file",
-        "log-opts": {
-            "max-size": "100m"
-        },
-        "storage-driver": "overlay2"
-    }))?;
-    sess.send("/tmp/docker-daemon.json", docker_config.as_bytes())
+    println!("Preparing node for containerd");
+    {
+        let modules_load_config = r#"
+overlay
+br_netfilter        
+        "#;
+        let modules_load_path = "/etc/modules-load.d/containerd.conf";
+        let tmp_path = "/tmp/containerd-modload";
+        sess.send(tmp_path, modules_load_config.as_bytes()).await?;
+        sess.run(&["sudo", "cp", tmp_path, modules_load_path])
+            .await?;
+        sess.run(&["sudo", "modprobe", "overlay"]).await?;
+        sess.run(&["sudo", "modprobe", "br_netfilter"]).await?;
+    }
+    {
+        let sysctls_config = r#"
+net.bridge.bridge-nf-call-iptables  = 1
+net.ipv4.ip_forward                 = 1
+net.bridge.bridge-nf-call-ip6tables = 1        
+        "#;
+        let sysctls_path = "/etc/sysctl.d/99-kubernetes-cri.conf";
+        let tmp_path = "/tmp/containerd-modload";
+        sess.send(tmp_path, sysctls_config.as_bytes()).await?;
+        sess.run(&["sudo", "cp", tmp_path, sysctls_path]).await?;
+        sess.run(&["sudo", "sysctl", "--system"]).await?;
+    }
+    println!("Installing containerd");
+    sess.run(&["sudo", "apt-get", "install", "-y", "containerd"])
         .await?;
+    println!("Configuring containerd");
+    sess.run(&["sudo", "mkdir", "/etc/containerd"]).await?;
     sess.run(&[
         "sudo",
-        "cp",
-        "/tmp/docker-daemon.json",
-        "/etc/docker/daemon.json",
-    ])
-    .await?;
-    println!("Restarting docker");
-    sess.run(&[
+        "containerd",
+        "config",
+        "default",
+        "|",
         "sudo",
-        "mkdir",
-        "-p",
-        "/etc/systemd/system/docker.service.d",
+        "tee",
+        "/etc/containerd/config.toml",
     ])
     .await?;
-    sess.run(&["sudo", "systemctl", "daemon-reload"]).await?;
-    sess.run(&["sudo", "systemctl", "restart", "docker"])
+    sess.run(&["sudo", "systemctl", "restart", "containerd"])
         .await?;
+
     println!("Installing Kubernetes");
     sess.run(&[
         "sudo", "apt-get", "install", "-y", "kubelet", "kubeadm", "kubectl",
@@ -377,11 +388,7 @@ pub async fn setup_soft(state: &VmState) -> anyhow::Result<()> {
     {
         let _e = xshell::pushenv(
             "KUBECONFIG",
-            format!(
-                "{}:{}",
-                kubeconfig_path.display(),
-                global_kc_path.display()
-            ),
+            format!("{}:{}", kubeconfig_path.display(), global_kc_path.display()),
         );
         let merged = xshell::cmd!("kubectl config view --flatten").read()?;
         xshell::write_file(global_kc_path, merged)?;

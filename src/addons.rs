@@ -1,3 +1,5 @@
+mod crds;
+
 use anyhow::Context as _;
 use k8s_openapi::{
     api::{apps::v1 as appsv1, core::v1},
@@ -11,6 +13,10 @@ trait Addon {
     fn name(&self) -> &str;
 
     fn fix(&self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>>>>;
+
+    fn pre_apply(&self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>>>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 struct Dashboard;
@@ -19,7 +25,7 @@ impl Addon for Dashboard {
         "dashboard"
     }
     fn fix(&self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>>>> {
-        Box::pin(async move { Ok(()) })
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -62,11 +68,13 @@ impl Addon for Admission {
             let mut deployment = deployments_api.get("admission-controller").await?;
             {
                 let spec = deployment.spec.as_mut().context("no .spec")?;
+                spec.replicas = Some(1);
                 let pod_spec = spec
                     .template
                     .spec
                     .as_mut()
                     .context("no .spec.template.spec")?;
+
                 anyhow::ensure!(pod_spec.containers.len() == 1);
                 let container = &mut pod_spec.containers[0];
                 container.image = Some(image);
@@ -79,23 +87,37 @@ impl Addon for Admission {
     }
 }
 
+struct Security;
+impl Addon for Security {
+    fn name(&self) -> &str {
+        "security"
+    }
+
+    fn fix(&self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>>>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
 struct Storage;
 impl Addon for Storage {
     fn name(&self) -> &str {
         "storage"
     }
+
     fn fix(&self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>>>> {
-        Box::pin(async move { Ok(()) })
+        Box::pin(async { Ok(()) })
     }
 }
 
 pub async fn install(only_apply: bool, filter: Option<&[String]>) -> anyhow::Result<()> {
     crate::configure_kubectl();
     let mut all_addons: Vec<Box<dyn Addon>> = vec![
-        //Box::new(Storage),
+        Box::new(crds::Crds),
+        Box::new(Security),
         Box::new(Dashboard),
         Box::new(Registry),
         Box::new(Admission),
+        Box::new(Storage),
     ];
 
     println!("Applying addons");
@@ -107,6 +129,11 @@ pub async fn install(only_apply: bool, filter: Option<&[String]>) -> anyhow::Res
     }
     if all_addons.is_empty() {
         anyhow::bail!("No addons matched the filter");
+    }
+
+    for addon in &all_addons {
+        println!("------ Preconfiguring addon {} -------", addon.name());
+        addon.pre_apply().await?;
     }
 
     let addons_base_path = crate::ROOT.join("addons");
@@ -140,7 +167,9 @@ async fn get_registry_credentials(k: &kube::Client) -> anyhow::Result<BTreeMap<S
         .collect::<String>();
     let credentials = xshell::cmd!("htpasswd -Bbn {username} {password}").read()?;
     let mut new_creds = BTreeMap::new();
+    // this is used by registry
     new_creds.insert("credentials".to_string(), credentials.to_string());
+    // this is used by d-k8s
     new_creds.insert("USERNAME".to_string(), username.to_string());
     new_creds.insert("PASSWORD".to_string(), password.clone());
     new_creds.insert("ADDRESS".to_string(), registry_url.clone());
@@ -189,6 +218,8 @@ async fn install_docker_registry() -> anyhow::Result<()> {
     let password = creds["PASSWORD"].clone();
     println!("Credentials: {}:{}", username, password);
     println!("Pushing credentials to k8s");
+    crate::configure_kubectl();
+    xshell::cmd!("kubectl create --namespace admission secret docker-registry local-registry-credentials-gold --docker-username {username} --docker-password {password} --docker-server {registry_url}").run().ok();
     println!("Creating docker registry certificates");
     setup_certs().await?;
     println!("Registry url is {}", registry_url);

@@ -38,10 +38,16 @@ spec:
     spec:
       restartPolicy: Always
       serviceAccountName: admission
+      imagePullSecrets:
+        - name: local-registry-credentials-gold
       volumes:
         - name: tls
           secret:
             secretName: admission-controller-pki
+        - name: volumes
+          hostPath:
+            path: /var/d-k8s-volumes
+            type: DirectoryOrCreate
       containers:
         - name: main
           env:
@@ -59,7 +65,9 @@ spec:
           volumeMounts:
             - name: tls
               mountPath: /tls
-  replicas: 1
+            - name: volumes
+              mountPath: /volumes
+  replicas: 0
 ---
 apiVersion: v1
 kind: Service
@@ -94,24 +102,39 @@ webhooks:
     sideEffects: None
     timeoutSeconds: 5
     reinvocationPolicy: IfNeeded
+# TODO: this failurePolicy and commented lines are hack
+# instead critical namespaces should be excluded
+    failurePolicy: Ignore
+#---
+#apiVersion: admissionregistration.k8s.io/v1
+#kind: ValidatingWebhookConfiguration
+#metadata:
+#  name: admission-controller.d-k8s.io
+#webhooks:
+#  - name: validating-admission-controller.d-k8s.io
+#    rules:
+#      - apiGroups: [""]
+#        apiVersions: ["v1"]
+#        operations: ["CREATE"]
+#        resources: ["pods"]
+#        scope: Namespaced
+#    clientConfig:
+#      service:
+#        namespace: admission
+#        name: admission-controller-svc
+#        path: /admission/validate
+#    admissionReviewVersions: ["v1"]
+#    sideEffects: None
+#    timeoutSeconds: 5
 ---
-apiVersion: admissionregistration.k8s.io/v1
-kind: ValidatingWebhookConfiguration
+kind: Propagation
+apiVersion: util.d-k8s.io/v1
 metadata:
-  name: admission-controller.d-k8s.io
-webhooks:
-  - name: validating-admission-controller.d-k8s.io
-    rules:
-      - apiGroups: [""]
-        apiVersions: ["v1"]
-        operations: ["CREATE"]
-        resources: ["pods"]
-        scope: Namespaced
-    clientConfig:
-      service:
-        namespace: admission
-        name: admission-controller-svc
-        path: /admission/validate
-    admissionReviewVersions: ["v1"]
-    sideEffects: None
-    timeoutSeconds: 5
+  name: local-registry-credentials
+spec:
+  source:
+    apiVersion: v1
+    kind: Secret
+    name: local-registry-credentials-gold
+    namespace: admission
+  targetName: local-registry-credentials

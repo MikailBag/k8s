@@ -22,18 +22,41 @@ enum Phase<'a> {
 /// Phase::Patch: unspecified
 /// Phase::Check: whether pod should be patched
 fn patch_pod(pod: &mut v1::Pod, phase: &Phase<'_>) -> Option<bool> {
-    let containers = &mut pod.spec.as_mut()?.containers;
-    for container in containers {
+    let spec = pod.spec.as_mut()?;
+    let mut should_ensure_secret = false;
+    for container in &mut spec.containers {
         let cur_image = container.image.as_ref()?;
         if let Some(suf) = cur_image.strip_prefix("cr.local/") {
             match phase {
                 Phase::Check => return Some(true),
                 Phase::Patch { repo_addr } => {
                     container.image = Some(format!("{}/{}", repo_addr, suf));
+                    should_ensure_secret = true;
                 }
             }
         }
     }
+    if should_ensure_secret {
+        let mut already_exists = false;
+        if let Some(current_secrets) = &spec.image_pull_secrets {
+            for secret_ref in current_secrets {
+                if secret_ref.name.as_deref() == Some("local-registry-credentials")
+                    || secret_ref.name.as_deref() == Some("local-registry-credentials-gold")
+                {
+                    already_exists = true;
+                    break;
+                }
+            }
+        }
+        if !already_exists {
+            spec.image_pull_secrets
+                .get_or_insert(Vec::new())
+                .push(v1::LocalObjectReference {
+                    name: Some("local-registry-credentials".to_string()),
+                })
+        }
+    }
+
     Some(false)
 }
 
@@ -74,7 +97,7 @@ fn make_store<K: kube::api::Meta + Clone + Send + Sync + serde::de::DeserializeO
         tokio::pin!(reflector);
         while let Some(item) = reflector.next().await {
             if let Err(e) = item {
-                log::warn!("watcher: error: {}", e);
+                tracing::warn!("watcher: error: {}", e);
             }
         }
     });

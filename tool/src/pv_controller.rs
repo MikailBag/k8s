@@ -1,4 +1,3 @@
-use anyhow::Context as _;
 use k8s_openapi::{
     api::core::v1::{HostPathVolumeSource, PersistentVolume, PersistentVolumeSpec},
     apimachinery::pkg::apis::meta::v1::LabelSelector,
@@ -56,20 +55,9 @@ impl kube_utils::storage::Provision for Provisioner {
 
     fn cleanup(
         &self,
-        pv: PersistentVolume,
+        _pv: PersistentVolume,
     ) -> futures::future::BoxFuture<'static, anyhow::Result<()>> {
         Box::pin(async move {
-            let volume_id = pv
-                .metadata
-                .annotations
-                .as_ref()
-                .and_then(|anns| anns.get(VOLUME_ID_ANNOTATION_NAME))
-                .context("missing annotation")?;
-
-            let volume_path = Path::new(VOLUME_DIR_IN_POD).join(volume_id);
-            tracing::info!("Deleting {}", volume_path.display());
-            tokio::fs::remove_dir_all(volume_path).await?;
-
             Ok(())
         })
     }
